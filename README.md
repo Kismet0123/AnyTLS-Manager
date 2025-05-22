@@ -7,7 +7,7 @@ AnyTLS 管理脚本，支持一键安装、升级和卸载
 >  AnyTLS是一个试图专注于缓解 "TLS in TLS" 问题的 TLS 代理协议（具有灵活的分包和填充策略、连接复用，降低代理延迟、简洁的配置的特点）
 
 > [!IMPORTANT]
-> AnyTLS协议较新，目前仅Mihomo和Singbox支持
+> AnyTLS协议较新，目前客户端支持较少
 
 ---
 
