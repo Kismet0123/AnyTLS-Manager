@@ -109,14 +109,14 @@ get_system_architecture() {
     esac
 }
 
-# 获取最新版本号，失败时回退到默认版本 0.0.8，确保不含 v 前缀
+# 获取最新版本号，失败时回退到默认版本 0.0.12，确保不含 v 前缀
 get_latest_version() {
     local version
     version=$(curl -s "https://api.github.com/repos/anytls/anytls-go/releases/latest" | grep -oP '"tag_name": "\K[^"]+')
-    version=${version#v}  # 去掉可能的 v 前缀
+    version=${version#v}
     if [[ -z "$version" ]]; then
-        echo -e "${WARNING} 无法获取最新版本，使用默认版本 0.0.8"
-        echo "0.0.8"
+        echo -e "${WARNING} 无法获取最新版本，使用默认版本 0.0.12"
+        echo "0.0.12"
     else
         echo "$version"
     fi
@@ -124,7 +124,7 @@ get_latest_version() {
 
 # 下载并解压 anytls 二进制文件
 download_anytls() {
-    VERSION=$(get_latest_version)  # 设置全局版本号
+    VERSION=$(get_latest_version)
     local arch_str=$(get_system_architecture)
     local zip_file="anytls_${VERSION}_linux_${arch_str}.zip"
     local download_url="https://github.com/anytls/anytls-go/releases/download/v${VERSION}/${zip_file}"
@@ -328,6 +328,105 @@ get_server_ip() {
     return 0
 }
 
+# 生成 AnyTLS 配置信息
+generate_anytls_config() {
+    local server_ips="$1"
+    local listen_port="$2"
+    local password="$3"
+    local sni="$4"
+    local insecure="$5"
+    
+    IFS=' ' read -r -a ip_array <<< "$server_ips"
+    
+    for server_ip in "${ip_array[@]}"; do
+        local ip_type="IPv4"
+        local display_ip="$server_ip"
+        if [[ "$server_ip" =~ : ]]; then
+            ip_type="IPv6"
+            display_ip="[$server_ip]"
+        fi
+        
+        # 构造参数
+        local uri_params=""
+        local surge_insecure="false"
+        
+        if [[ -n "$sni" ]]; then
+            uri_params="sni=${sni}"
+            if [[ "$insecure" == "1" ]]; then
+                uri_params="${uri_params}&insecure=1"
+                surge_insecure="true"
+            else
+                uri_params="${uri_params}&insecure=0"
+            fi
+        else
+            if [[ "$insecure" == "1" ]]; then
+                uri_params="insecure=1"
+                surge_insecure="true"
+            else
+                uri_params="insecure=0"
+            fi
+        fi
+        
+        local share_link="anytls://${password}@${display_ip}:${listen_port}?${uri_params}"
+        
+        echo -e "\n${Yellow_font_prefix}================== 服务器配置 ($ip_type) ==================${RESET}"
+        echo -e "${Green_font_prefix}服务器 IP：${RESET}${server_ip}"
+        echo -e "${Green_font_prefix}端口：${RESET}${listen_port}"
+        echo -e "${Green_font_prefix}密码：${RESET}${password}"
+        echo -e "${Green_font_prefix}SNI：${RESET}${sni}"
+        echo -e "${Green_font_prefix}跳过证书验证 (Insecure)：${RESET}$([[ "$insecure" == "1" ]] && echo "是" || echo "否")"
+
+        echo -e "\n${Yellow_font_prefix}------------------ 通用 / Shadowrocket 配置 ($ip_type) ------------------${RESET}"
+        echo -e "${Green_font_prefix}AnyTLS 链接：${RESET}"
+        echo -e "${share_link}"
+        echo -e "${Green_font_prefix}二维码链接（复制到浏览器生成）：${RESET}"
+        echo -e "https://api.cl2wm.cn/api/qrcode/code?text=${share_link}"
+
+        echo -e "\n${Yellow_font_prefix}------------------ Surge 配置 ($ip_type) ------------------${RESET}"
+        echo -e "${Green_font_prefix}AnyTLS = anytls, ${display_ip}, ${listen_port}, password=${password}, sni=${sni}, skip-cert-verify=${surge_insecure}${RESET}"
+
+        echo -e "\n${Yellow_font_prefix}------------------ Mihomo (Clash Meta) 配置 ($ip_type) ------------------${RESET}"
+        echo -e "${Green_font_prefix}proxies:${RESET}"
+        echo -e "  - name: anytls-$ip_type"
+        echo -e "    type: anytls"
+        echo -e "    server: ${display_ip}"
+        echo -e "    port: ${listen_port}"
+        echo -e "    password: \"${password}\""
+        echo -e "    client-fingerprint: chrome"
+        echo -e "    udp: true"
+        echo -e "    sni: \"${sni}\""
+        echo -e "    alpn:"
+        echo -e "      - h2"
+        echo -e "      - http/1.1"
+        if [[ "$insecure" == "1" ]]; then
+            echo -e "    skip-cert-verify: true"
+        else
+            echo -e "    skip-cert-verify: false"
+        fi
+
+        echo -e "\n${Yellow_font_prefix}------------------ Sing-box 配置 ($ip_type) ------------------${RESET}"
+        echo -e "${Green_font_prefix}{${RESET}"
+        echo -e "  \"type\": \"anytls\","
+        echo -e "  \"tag\": \"anytls-out-$ip_type\","
+        echo -e "  \"server\": \"${server_ip}\","
+        echo -e "  \"server_port\": ${listen_port},"
+        echo -e "  \"password\": \"${password}\","
+        echo -e "  \"idle_session_check_interval\": \"30s\","
+        echo -e "  \"idle_session_timeout\": \"30s\","
+        echo -e "  \"min_idle_session\": 5,"
+        echo -e "  \"tls\": {"
+        echo -e "    \"enabled\": true,"
+        echo -e "    \"server_name\": \"${sni}\","
+        if [[ "$insecure" == "1" ]]; then
+            echo -e "    \"insecure\": true"
+        else
+            echo -e "    \"insecure\": false"
+        fi
+        echo -e "  }"
+        echo -e "}"
+    done
+}
+
 # 查看配置
 view_config() {
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -339,34 +438,9 @@ view_config() {
         local version=$(grep '^version=' "$CONFIG_FILE" | cut -d'=' -f2)
         local server_ips=$(get_server_ip) || { echo -e "${ERROR} 获取服务器 IP 失败"; return 1; }
 
-        # 输出基本配置信息（仅一次）
-        echo -e "${Cyan_font_prefix}AnyTLS 配置信息：${RESET}"
-        echo -e "服务器 IP：${server_ips}"
-        echo -e "监听地址：${LISTEN_ADDR}:${listen_port}"
-        echo -e "密码：${password}"
-        echo -e "SNI：${sni}"
-        echo -e "不安全连接：${insecure} (1=启用, 0=禁用)"
-        echo -e "版本：${version}"
-
-        # 为双栈 IP 生成 URI
-        IFS=' ' read -r -a ip_array <<< "$server_ips"
-        for server_ip in "${ip_array[@]}"; do
-            local display_ip="$server_ip"
-            [[ "$server_ip" =~ : ]] && display_ip="[$server_ip]"
-            local uri="anytls://${password}@${display_ip}:${listen_port}/?"
-            if [[ -n "$sni" ]]; then
-                uri="${uri}sni=${sni}"
-                [[ "$insecure" == "1" ]] && uri="${uri}&insecure=1" || uri="${uri}&insecure=0"
-            else
-                uri="${uri}insecure=${insecure}"
-            fi
-            echo -e "\n${Cyan_font_prefix}AnyTLS URI ($server_ip)：${RESET}"
-            echo -e "${Yellow_font_prefix}${uri}${RESET}"
-        done
-
-        # 添加 Mihomo 和 Sing-box 配置输出
-        echo -e "\n${Green_font_prefix}=== 以下为 Mihomo 和 Sing-box 配置 ===${RESET}"
-        generate_anytls_config "$server_ips" "$listen_port" "$password" "$sni"
+        echo -e "${Cyan_font_prefix}AnyTLS 当前安装版本：${version}${RESET}"
+        
+        generate_anytls_config "$server_ips" "$listen_port" "$password" "$sni" "$insecure"
     else
         echo -e "${ERROR} 未找到配置文件，请先安装 AnyTLS"
     fi
@@ -498,58 +572,6 @@ upgrade_anytls() {
     fi
 }
 
-# 生成 AnyTLS 配置信息（仅包括 Mihomo 和 Sing-box）
-generate_anytls_config() {
-    local server_ips="$1"
-    local listen_port="$2"
-    local password="$3"
-    local sni="$4"
-    IFS=' ' read -r -a ip_array <<< "$server_ips"
-    
-    for server_ip in "${ip_array[@]}"; do
-        local ip_type="IPv4"
-        local display_ip="$server_ip"
-        if [[ "$server_ip" =~ : ]]; then
-            ip_type="IPv6"
-            display_ip="[$server_ip]"
-        fi
-        
-        echo -e "\n${Yellow_font_prefix}================== 配置信息 ($ip_type) ==================${RESET}"
-
-        echo -e "\n${Yellow_font_prefix}------------------ Mihomo 配置 ($ip_type) ------------------${RESET}"
-        echo -e "${Green_font_prefix}proxies:${RESET}"
-        echo -e "  - name: anytls-$ip_type"
-        echo -e "    type: anytls"
-        echo -e "    server: ${display_ip}"
-        echo -e "    port: ${listen_port}"
-        echo -e "    password: \"${password}\""
-        echo -e "    client-fingerprint: chrome"
-        echo -e "    udp: true"
-        echo -e "    sni: \"${sni}\""
-        echo -e "    alpn:"
-        echo -e "      - h2"
-        echo -e "      - http/1.1"
-        echo -e "    skip-cert-verify: true"
-
-        echo -e "\n${Yellow_font_prefix}------------------ Sing-box 配置 ($ip_type) ------------------${RESET}"
-        echo -e "${Green_font_prefix}{${RESET}"
-        echo -e "  \"type\": \"anytls\","
-        echo -e "  \"tag\": \"anytls-out-$ip_type\","
-        echo -e "  \"server\": \"${server_ip}\","
-        echo -e "  \"server_port\": ${listen_port},"
-        echo -e "  \"password\": \"${password}\","
-        echo -e "  \"idle_session_check_interval\": \"30s\","
-        echo -e "  \"idle_session_timeout\": \"30s\","
-        echo -e "  \"min_idle_session\": 5,"
-        echo -e "  \"tls\": {"
-        echo -e "    \"enabled\": true,"
-        echo -e "    \"server_name\": \"${sni}\","
-        echo -e "    \"insecure\": true"
-        echo -e "  }"
-        echo -e "}"
-    done
-}
-
 # 安装 AnyTLS
 install_anytls() {
     install_tools
@@ -563,10 +585,10 @@ install_anytls() {
     clear
     echo -e "${Green_font_prefix}=== AnyTLS 安装完成，以下为配置信息 ===${RESET}"
     local server_ip=$(get_server_ip) || { echo -e "${ERROR} 获取服务器 IP 失败"; exit 1; }
-    generate_anytls_config "$server_ip" "$LISTEN_PORT" "$PASSWORD" "$SNI"
+    generate_anytls_config "$server_ip" "$LISTEN_PORT" "$PASSWORD" "$SNI" "$INSECURE"
 }
 
-# 主菜单（与 shadowtls_manager 结构一致）
+# 主菜单
 main_menu() {
     while true; do
         clear
